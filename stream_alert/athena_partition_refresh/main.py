@@ -16,6 +16,7 @@ limitations under the License.
 
 import json
 import logging
+import os
 
 from datetime import datetime
 
@@ -51,10 +52,16 @@ def _load_config():
     return config
 
 
-@backoff.on_predicate(backoff.fibo,
-                      lambda status: status in ('QUEUED', 'RUNNING'),
-                      max_value=10,
-                      jitter=backoff.full_jitter)
+def _backoff_handler(details):
+    """Simple logging handler for when polling backoff occurs."""
+    LOGGER.debug('Trying again in {wait:0.1f} seconds after {tries} tries calling {target}'.format(**details))
+
+
+def _success_handler(details):
+    """Simple logging handler for when polling backoff occurs."""
+    LOGGER.debug('Completed after {tries} tries calling {target}'.format(**details))
+
+
 def check_query_status(query_execution_id):
     """Check in on the running query, back off if the job is running or queued
     
@@ -62,10 +69,18 @@ def check_query_status(query_execution_id):
         [string]: The result of the query, this can be SUCCEEDED, FAILED, or CANCELLED.
                   Reference http://bit.ly/2uuRtda
     """
-    status = ATHENA_CLIENT.get_query_execution(
-        QueryExecutionId=query_execution_id
-    )
-    return status['QueryExecution']['Status']['State']
+    @backoff.on_predicate(backoff.fibo,
+                          lambda status: status in ('QUEUED', 'RUNNING'),
+                          max_value=10,
+                          jitter=backoff.full_jitter,
+                          on_backoff=_backoff_handler,
+                          on_success=_success_handler)
+    def _get_query_execution(query_execution_id):
+        return ATHENA_CLIENT.get_query_execution(
+            QueryExecutionId=query_execution_id
+        )['QueryExecution']['Status']['State']
+
+    return _get_query_execution(query_execution_id)
 
 
 def run_athena_query(**kwargs):
@@ -81,6 +96,7 @@ def run_athena_query(**kwargs):
         [bool]: Query success
         [dict]: Query result response
     """
+    LOGGER.debug('Executing query: %s', kwargs['query'])
     query_execution_resp = ATHENA_CLIENT.start_query_execution(
         QueryString=kwargs['query'],
         QueryExecutionContext={'Database': kwargs.get('database', DATABASE_DEFAULT)},
@@ -90,8 +106,8 @@ def run_athena_query(**kwargs):
         )}
     )
     query_execution_result = check_query_status(query_execution_resp['QueryExecutionId'])
-    if query_execution_result is not 'SUCCEEDED':
-        LOGGER.error('The query %s returned %s, exiting!', kwargs['query'], show_databases_result)
+    if query_execution_result != 'SUCCEEDED':
+        LOGGER.error('The query %s returned %s, exiting!', kwargs['query'], query_execution_result)
         return False
 
     query_results_resp = ATHENA_CLIENT.get_query_results(
@@ -113,23 +129,43 @@ def check_database_exists(results_bucket, results_path):
         results_bucket=results_bucket,
         results_path=results_path
     )
-
-    if not query_resp['ResultSet']['Rows']:
+    if isinstance(query_resp, dict) and not query_resp['ResultSet']['Rows']:
         LOGGER.error('The \'streamalert\' database does not exist, please create it.')
         return False
 
     return True
 
 
+def normal_partition_refresh(config, athena_results_bucket, athena_results_path)):
+    normal_partition_config = config['lambda']['athena_partition_refresh_config']['partitioning']['normal']
+    query = 'MSCK REPAIR TABLE {};'.format(athena_table)
+    for bucket, athena_table in normal_partition_config.iteritems():
+        resp = run_athena_query(
+            query=query,
+            database='streamalert',
+            results_bucket=results_bucket,
+            results_path=results_path
+        )
+        if resp:
+            LOGGER.info('Query results:')
+            for row in resp['ResultSet']['Rows']:
+                LOGGER.info(row)
+
+
+def firehose_partition_refresh(config):
+    LOGGER.error('Firehose partition refresh is not yet supported, exiting!')
+    raise NotImplementedError
+
+
 def handler(event, context):
     """Athena Partition Refresher Handler Function"""
-    config = load_config
+    config = _load_config()
     if not config:
         LOGGER.error('No config found, exiting!')
         return
 
     # Athena queries need an S3 bucket for results
-    athena_results_bucket = 's3://aws-athena-query-results-{account_id}-{region}'.format(
+    athena_results_bucket = 's3://aws-athena-query-results-{}-{}'.format(
         config['global']['account']['aws_account_id'],
         config['global']['account']['region']
     )
@@ -140,4 +176,4 @@ def handler(event, context):
     if not check_database_exists(athena_results_bucket, athena_results_path):
         return
 
-    LOGGER.info('The database exists!!!!!')
+    normal_partition_refresh(config, athena_results_bucket, athena_results_path)
