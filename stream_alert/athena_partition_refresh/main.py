@@ -31,6 +31,7 @@ LOGGER.setLevel(LEVEL.upper())
 ATHENA_CLIENT = boto3.client('athena')
 DATABASE_DEFAULT = 'default'
 
+
 def _load_config():
     """Load the Athena Lambda configuration file
 
@@ -44,7 +45,7 @@ def _load_config():
     for config_file in config_files:
         with open('conf/{}.json'.format(config_file)) as config_fh:
             try:
-                config [config_file] = json.load(config_fh)
+                config[config_file] = json.load(config_fh)
             except ValueError:
                 LOGGER.error('The \'%s\' file could not be loaded into json', config_file)
                 return
@@ -54,17 +55,22 @@ def _load_config():
 
 def _backoff_handler(details):
     """Simple logging handler for when polling backoff occurs."""
-    LOGGER.debug('Trying again in {wait:0.1f} seconds after {tries} tries calling {target}'.format(**details))
+    LOGGER.debug('Trying again in %f seconds after %d tries calling %s',
+                 details['wait'],
+                 details['tries'],
+                 details['target'])
 
 
 def _success_handler(details):
     """Simple logging handler for when polling backoff occurs."""
-    LOGGER.debug('Completed after {tries} tries calling {target}'.format(**details))
+    LOGGER.debug('Completed after %d tries calling %s',
+                 details['tries'],
+                 details['target'])
 
 
 def check_query_status(query_execution_id):
     """Check in on the running query, back off if the job is running or queued
-    
+
     Returns:
         [string]: The result of the query, this can be SUCCEEDED, FAILED, or CANCELLED.
                   Reference http://bit.ly/2uuRtda
@@ -100,14 +106,17 @@ def run_athena_query(**kwargs):
     query_execution_resp = ATHENA_CLIENT.start_query_execution(
         QueryString=kwargs['query'],
         QueryExecutionContext={'Database': kwargs.get('database', DATABASE_DEFAULT)},
-        ResultConfiguration={'OutputLocation':'{}/{}'.format(
+        ResultConfiguration={'OutputLocation': '{}/{}'.format(
             kwargs['results_bucket'],
             kwargs['results_path']
         )}
     )
     query_execution_result = check_query_status(query_execution_resp['QueryExecutionId'])
     if query_execution_result != 'SUCCEEDED':
-        LOGGER.error('The query %s returned %s, exiting!', kwargs['query'], query_execution_result)
+        LOGGER.error(
+            'The query %s returned %s, exiting!',
+            kwargs['query'],
+            query_execution_result)
         return False
 
     query_results_resp = ATHENA_CLIENT.get_query_results(
@@ -136,15 +145,14 @@ def check_database_exists(results_bucket, results_path):
     return True
 
 
-def normal_partition_refresh(config, athena_results_bucket, athena_results_path)):
+def normal_partition_refresh(config, athena_results_bucket, athena_results_path):
     normal_partition_config = config['lambda']['athena_partition_refresh_config']['partitioning']['normal']
-    query = 'MSCK REPAIR TABLE {};'.format(athena_table)
-    for bucket, athena_table in normal_partition_config.iteritems():
+    for _, athena_table in normal_partition_config.iteritems():
         resp = run_athena_query(
-            query=query,
+            query='MSCK REPAIR TABLE {};'.format(athena_table),
             database='streamalert',
-            results_bucket=results_bucket,
-            results_path=results_path
+            results_bucket=athena_results_bucket,
+            results_path=athena_results_path
         )
         if resp:
             LOGGER.info('Query results:')
@@ -152,7 +160,7 @@ def normal_partition_refresh(config, athena_results_bucket, athena_results_path)
                 LOGGER.info(row)
 
 
-def firehose_partition_refresh(config):
+def firehose_partition_refresh(_):
     LOGGER.error('Firehose partition refresh is not yet supported, exiting!')
     raise NotImplementedError
 
@@ -170,7 +178,8 @@ def handler(event, context):
         config['global']['account']['region']
     )
     # Produces athena_partition_refresh/2017/01/01 keys
-    athena_results_path = 'athena_partition_refresh/{}'.format(datetime.now().strftime('%Y/%m/%d'))
+    athena_results_path = 'athena_partition_refresh/{}'.format(
+        datetime.now().strftime('%Y/%m/%d'))
 
     # The StreamAlert database needs to exist before we run queries.
     if not check_database_exists(athena_results_bucket, athena_results_path):
