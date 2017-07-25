@@ -80,13 +80,19 @@ data "aws_iam_policy_document" "athena_query_policy" {
 resource "aws_lambda_function" "athena_partition_refresh" {
   function_name = "streamalert_athena_partition_refresh"
   description   = "StreamAlert Athena Refresh"
-  runtime       = "python3.6"
+  runtime       = "python2.7"
   role          = "${aws_iam_role.athena_partition_role.arn}"
   handler       = "${var.lambda_handler}"
   memory_size   = "${var.lambda_memory}"
   timeout       = "${var.lambda_timeout}"
   s3_bucket     = "${var.lambda_s3_bucket}"
   s3_key        = "${var.lambda_s3_key}"
+
+  environment {
+    variables = {
+      LOGGER_LEVEL = "${var.lambda_log_level}"
+    }
+  }
 
   tags {
     Name = "StreamAlert"

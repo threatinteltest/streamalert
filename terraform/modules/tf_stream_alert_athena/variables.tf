@@ -21,6 +21,11 @@ variable "lambda_s3_key" {
   type = "string"
 }
 
+variable "lambda_log_level" {
+  type    = "string"
+  default = "info"
+}
+
 variable "athena_data_buckets" {
   type = "list"
 }
