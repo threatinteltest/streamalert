@@ -139,7 +139,22 @@ def check_database_exists(results_bucket, results_path):
         results_path=results_path
     )
     if isinstance(query_resp, dict) and not query_resp['ResultSet']['Rows']:
-        LOGGER.error('The \'streamalert\' database does not exist, please create it.')
+        LOGGER.info('The \'streamalert\' database does not exist, please create it.')
+        return False
+
+    return True
+
+
+def check_table_exists(results_bucket, results_path, table_name):
+    """Verify a given StreamAlert Athena table exists."""
+    query_resp = run_athena_query(
+        query='SHOW TABLES LIKE \'{}\';'.format(table_name),
+        database='streamalert',
+        results_bucket=results_bucket,
+        results_path=results_path
+    )
+    if isinstance(query_resp, dict) and not query_resp['ResultSet']['Rows']:
+        LOGGER.info('The streamalert table \'%s\' does not exist, please create it.', table_name)
         return False
 
     return True
